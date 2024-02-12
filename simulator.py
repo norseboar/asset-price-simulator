@@ -133,7 +133,7 @@ def run_many_trials(trials, turns, **kwargs):
         output_lines.append(
             [
                 strategy_name,
-                "Total Buys",
+                "Days with Buy",
                 s_5pct.buy_count,
                 s_50pct.buy_count,
                 s_95pct.buy_count,
@@ -143,7 +143,7 @@ def run_many_trials(trials, turns, **kwargs):
         output_lines.append(
             [
                 strategy_name,
-                "Buys at Peak Price",
+                "Days with Buy at Peak Price",
                 s_5pct.peak_buy_count,
                 s_50pct.peak_buy_count,
                 s_95pct.peak_buy_count,
@@ -153,7 +153,7 @@ def run_many_trials(trials, turns, **kwargs):
         output_lines.append(
             [
                 strategy_name,
-                "Pct of Buys at Peak Price",
+                "%% of Days with Buy at Peak Price",
                 s_5pct.peak_buy_count / s_5pct.buy_count if s_5pct.buy_count > 0 else 0,
                 (
                     s_50pct.peak_buy_count / s_50pct.buy_count
