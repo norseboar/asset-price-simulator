@@ -1,273 +1,189 @@
+from collections import defaultdict
 import math
 import random
 from textwrap import dedent
 
+import matplotlib.pyplot as plt
 import numpy as np
 from tabulate import tabulate
 
-rng = np.random.default_rng()
+from strategies import BuyRegularly, BuyDipThreshold, NeverBuy
+from utilities import cond_print
 
 
-class Actor:
-    shares = 0
-    money = 120000
-
-    peak_price = 0
-    buy_count = 0
-    peak_buy_count = 0
-
-    def should_buy(self, price):
-        if price > self.peak_price:
-            self.peak_price = price
-        return True
-
-    def buy(self, price):
-        self.buy_count += 1
-        if price >= self.peak_price:
-            self.peak_buy_count += 1
-        share_count = math.floor(self.money / price)
-        self.money -= price * share_count
-        self.shares += share_count
-
-    def get_net_worth(self, price):
-        return self.shares * price + self.money
-
-    def __repr__(self) -> str:
-        return f"Shares: {self.shares}, Money: {self.money}"
-
-
-class DipActor(Actor):
-    prices = []
-    buy_pct = 0.95
-    buy_window = 30
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.prices = []
-
-    def should_buy(self, price):
-        super().should_buy(price)
-        self.prices.append(price)
-        if len(self.prices) > self.buy_window:
-            self.prices.pop(0)
-        if (sum(self.prices) / len(self.prices)) * self.buy_pct >= price:
-            return True
-        else:
-            return False
-
-    def __repr__(self) -> str:
-        return f"Shares: {self.shares}, Money: {self.money}, Prices: {self.prices}"
-
-
-def update_price(price):
-    variance = rng.normal(0.002, 0.01)
-    return price + (price * variance)
+def update_price(rng, price, midpoint, stddev):
+    variance = rng.normal(midpoint, stddev)
+    return max(price + (price * variance), 0)
 
 
 def run_trial(
     turns,
+    seed=None,
     starting_price=100,
-    buy_pct=0.95,
+    starting_money=10000,
+    salary=100,
+    salary_interval=1,
+    growth_midpoint=0.002,
+    growth_stddev=0.01,
+    buy_threshold=0.95,
     buy_window=30,
     print_summary=False,
     print_details=False,
+    show_chart=False,
 ):
-    regactor = Actor()
-    dipactor = DipActor()
-    cond_print(print_summary, f"regactor: {regactor}, dipactor: {dipactor}")
-    dipactor.buy_pct = buy_pct
-    dipactor.buy_window = buy_window
+    if seed == None:
+        seed = random.randint(0, 999999)
+    rng = np.random.default_rng(seed)
+
+    strategy_kwargs = {
+        "seed": seed,
+        "starting_money": starting_money,
+        "print_details": print_details,
+    }
+    reg_strategy = BuyRegularly(**strategy_kwargs)
+    dip_threshold_strategy = BuyDipThreshold(
+        **strategy_kwargs, buy_threshold=buy_threshold, buy_window=buy_window
+    )
+    never_buy = NeverBuy(**strategy_kwargs)
+
+    strategies = [reg_strategy, dip_threshold_strategy, never_buy]
+    for s in strategies:
+        cond_print(print_summary, s)
+        s.money = starting_money
+
+    all_prices = []
 
     price = starting_price
     turn_count = 0
 
     while turn_count < turns:
-        if turn_count % 14 == 0:
-            regactor.money += 10000
-            dipactor.money += 10000
-        price = update_price(price)
-        cond_print(print_details, f"price is {price}")
-        if regactor.should_buy(price):
-            cond_print(
-                print_details, f"regactor buying at {price} with {regactor.money}"
-            )
-            regactor.buy(price)
-        if dipactor.should_buy(price):
-            cond_print(
-                print_details, f"dipactor buying at {price} with {dipactor.money}"
-            )
-            dipactor.buy(price)
+        if turn_count % salary_interval == 0:
+            for s in strategies:
+                s.money += salary
+
+        new_price = update_price(rng, price, growth_midpoint, growth_stddev)
         cond_print(
             print_details,
-            f"dipactor avg was {sum(dipactor.prices)/len(dipactor.prices)}",
+            f"Price changed by {new_price - price}. New price is {new_price}",
         )
+
+        price = new_price
+        all_prices.append(price)
+
+        for s in strategies:
+            s.assess_and_buy(price, turn_count)
+
         turn_count += 1
 
-    cond_print(
-        print_summary,
-        dedent(
-            f"""
-            -------------------------------------
-            After {turns} turns:
+    if show_chart:
+        x = range(len(all_prices))
+        y = all_prices
+        plt.plot(x, y)
+        for t in dip_threshold_strategy.buy_turns:
+            plt.axvline(t)
+        plt.show()
 
-            reg_actor has {regactor.shares} shares and {regactor.money} money
-            Net worth: {regactor.get_net_worth(price)}
-
-            dip_actor has {dipactor.shares} shares and {dipactor.money} money
-            Net worth: {dipactor.get_net_worth(price)}
-
-            reg_actor performed {regactor.get_net_worth(price) / dipactor.get_net_worth(price)}
-            times better than dip_actor
-            """
-        ),
-    )
-
-    return (
-        regactor.get_net_worth(price),
-        dipactor.get_net_worth(price),
-        regactor.buy_count,
-        dipactor.buy_count,
-        regactor.peak_buy_count,
-        dipactor.peak_buy_count,
-        price,
-    )
+    return strategies, price
 
 
-def run_many_trials(
-    trials,
-    turns,
-    starting_price=100,
-    buy_pct=0.95,
-    buy_window=30,
-    print_summary=False,
-    print_details=False,
-):
-    regactor_networths = []
-    dipactor_networths = []
-    regactor_buy_counts = []
-    dipactor_buy_counts = []
-    regactor_peak_buy_counts = []
-    dipactor_peak_buy_counts = []
+def run_many_trials(trials, turns, **kwargs):
     prices = []
+    strategy_map = defaultdict(list)
     for _ in range(trials):
-        (
-            r_net_worth,
-            d_net_worth,
-            r_buy_count,
-            d_buy_count,
-            r_peak_buy_count,
-            d_peak_buy_count,
-            price,
-        ) = run_trial(
-            turns,
-            starting_price=starting_price,
-            buy_pct=buy_pct,
-            buy_window=buy_window,
-            print_summary=print_summary,
-            print_details=print_details,
-        )
-        regactor_networths.append(r_net_worth)
-        dipactor_networths.append(d_net_worth)
-        regactor_buy_counts.append(r_buy_count)
-        dipactor_buy_counts.append(d_buy_count)
-        regactor_peak_buy_counts.append(r_peak_buy_count)
-        dipactor_peak_buy_counts.append(d_peak_buy_count)
+        strategies, price = run_trial(turns, **kwargs)
+        for s in strategies:
+            strategy_map[s.name].append(s)
         prices.append(price)
-    ratios = [r / d for r, d in zip(regactor_networths, dipactor_networths)]
 
-    ratio_data = [
-        "Reg:Dip Net Worth Ratio",
+    ratios = [
+        r.get_net_worth() / d.get_net_worth() if d.get_net_worth() > 0 else math.inf
+        for r, d in zip(
+            strategy_map[BuyRegularly.name], strategy_map[BuyDipThreshold.name]
+        )
+    ]
+
+    ratio_output = [
+        f"{BuyRegularly.name} vs {BuyDipThreshold.name}",
+        "Net Worth Ratio",
         np.percentile(ratios, 5),
         np.percentile(ratios, 50),
         np.percentile(ratios, 95),
     ]
-    price_data = [
-        "Stock Price",
-        np.percentile(prices, 5),
-        np.percentile(prices, 50),
-        np.percentile(prices, 95),
-    ]
-    r_net_worth_data = [
-        "Reg Net Worth",
-        np.percentile(regactor_networths, 5),
-        np.percentile(regactor_networths, 50),
-        np.percentile(regactor_networths, 95),
-    ]
-    d_net_worth_data = [
-        "Dip Net Worth",
-        np.percentile(dipactor_networths, 5),
-        np.percentile(dipactor_networths, 50),
-        np.percentile(dipactor_networths, 95),
-    ]
 
-    r_buy_count_data = [
-        "Reg Buy Count",
-        np.percentile(regactor_buy_counts, 5),
-        np.percentile(regactor_buy_counts, 50),
-        np.percentile(regactor_buy_counts, 95),
-    ]
+    output_lines = [ratio_output]
 
-    d_buy_count_data = [
-        "Dip Buy Count",
-        np.percentile(dipactor_buy_counts, 5),
-        np.percentile(dipactor_buy_counts, 50),
-        np.percentile(dipactor_buy_counts, 95),
-    ]
+    for strategy_name, l in strategy_map.items():
+        l.sort(key=lambda s: s.get_net_worth())
+        l.sort(key=lambda s: s.get_net_worth())
 
-    r_peak_buy_count_data = [
-        "Reg Peak Buy Count",
-        np.percentile(regactor_peak_buy_counts, 5),
-        np.percentile(regactor_peak_buy_counts, 50),
-        np.percentile(regactor_peak_buy_counts, 95),
-    ]
+        s_5pct = l[math.floor(len(l) / 20)]
+        s_50pct = l[math.floor(len(l) / 2)]
+        s_95pct = l[math.floor(len(l) / 20) * 19]
 
-    d_peak_buy_count_data = [
-        "Dip Peak Buy Count",
-        np.percentile(dipactor_peak_buy_counts, 5),
-        np.percentile(dipactor_peak_buy_counts, 50),
-        np.percentile(dipactor_peak_buy_counts, 95),
-    ]
+        output_lines.append(
+            [
+                strategy_name,
+                "Net Worth",
+                s_5pct.get_net_worth(),
+                s_50pct.get_net_worth(),
+                s_95pct.get_net_worth(),
+            ]
+        )
 
-    r_peak_buy_pct_data = [
-        "Reg Peak Buy Pct",
-        np.percentile(regactor_peak_buy_counts, 5)
-        / np.percentile(regactor_buy_counts, 5),
-        np.percentile(regactor_peak_buy_counts, 50)
-        / np.percentile(regactor_buy_counts, 50),
-        np.percentile(regactor_peak_buy_counts, 95)
-        / np.percentile(regactor_buy_counts, 95),
-    ]
+        output_lines.append(
+            [
+                strategy_name,
+                "Total Buys",
+                s_5pct.buy_count,
+                s_50pct.buy_count,
+                s_95pct.buy_count,
+            ]
+        )
 
-    d_peak_buy_pct_data = [
-        "Dip Peak Buy Pct",
-        np.percentile(dipactor_peak_buy_counts, 5)
-        / np.percentile(dipactor_buy_counts, 5),
-        np.percentile(dipactor_peak_buy_counts, 50)
-        / np.percentile(dipactor_buy_counts, 50),
-        np.percentile(dipactor_peak_buy_counts, 95)
-        / np.percentile(dipactor_buy_counts, 95),
-    ]
+        output_lines.append(
+            [
+                strategy_name,
+                "Buys at Peak Price",
+                s_5pct.peak_buy_count,
+                s_50pct.peak_buy_count,
+                s_95pct.peak_buy_count,
+            ]
+        )
+
+        output_lines.append(
+            [
+                strategy_name,
+                "Pct of Buys at Peak Price",
+                s_5pct.peak_buy_count / s_5pct.buy_count if s_5pct.buy_count > 0 else 0,
+                (
+                    s_50pct.peak_buy_count / s_50pct.buy_count
+                    if s_50pct.buy_count > 0
+                    else 0
+                ),
+                (
+                    s_95pct.peak_buy_count / s_95pct.buy_count
+                    if s_95pct.buy_count > 0
+                    else 0
+                ),
+            ]
+        )
+
+    output_lines.append(
+        [strategy_name, "Seed", s_5pct.seed, s_50pct.seed, s_95pct.seed]
+    )
 
     print(f"After {trials} trials of {turns} turns each:")
     print(
         tabulate(
-            [
-                ratio_data,
-                price_data,
-                r_net_worth_data,
-                r_buy_count_data,
-                r_peak_buy_count_data,
-                r_peak_buy_pct_data,
-                d_net_worth_data,
-                d_buy_count_data,
-                d_peak_buy_count_data,
-                d_peak_buy_pct_data,
+            output_lines,
+            headers=[
+                "Strategy",
+                "Metric",
+                "5th Percentile",
+                "50th Percentile",
+                "95th Percentile",
             ],
-            headers=["Metric", "5th Percentile", "50th Percentile", "95th Percentile"],
+            numalign="right",
+            intfmt=".20g",
         )
     )
-
-
-def cond_print(should_print, *args):
-    if should_print:
-        print(*args)
