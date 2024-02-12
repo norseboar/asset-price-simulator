@@ -5,9 +5,9 @@ from textwrap import dedent
 
 import matplotlib.pyplot as plt
 import numpy as np
-from tabulate import tabulate
+from tabulate import tabulate, SEPARATING_LINE
 
-from strategies import BuyRegularly, BuyDipThreshold, NeverBuy
+from strategies import BuyRegularly, BuyDipThreshold, BuyDipTrend, NeverBuy
 from utilities import cond_print
 
 
@@ -25,14 +25,15 @@ def run_trial(
     salary_interval=1,
     growth_midpoint=0.002,
     growth_stddev=0.01,
-    buy_threshold=0.95,
-    buy_window=30,
+    bdthreshold_threshold=0.95,
+    bdthreshold_window=30,
+    bdtrend_trend_length=3,
     print_summary=False,
     print_details=False,
-    show_chart=False,
+    show_chart=None,
 ):
     if seed == None:
-        seed = random.randint(0, 999999)
+        seed = random.randint(0, 99999999)
     rng = np.random.default_rng(seed)
 
     strategy_kwargs = {
@@ -42,11 +43,16 @@ def run_trial(
     }
     reg_strategy = BuyRegularly(**strategy_kwargs)
     dip_threshold_strategy = BuyDipThreshold(
-        **strategy_kwargs, buy_threshold=buy_threshold, buy_window=buy_window
+        **strategy_kwargs,
+        threshold=bdthreshold_threshold,
+        window=bdthreshold_window,
+    )
+    dip_trend_strategy = BuyDipTrend(
+        **strategy_kwargs, trend_length=bdtrend_trend_length
     )
     never_buy = NeverBuy(**strategy_kwargs)
 
-    strategies = [reg_strategy, dip_threshold_strategy, never_buy]
+    strategies = [reg_strategy, dip_threshold_strategy, dip_trend_strategy, never_buy]
     for s in strategies:
         cond_print(print_summary, s)
         s.money = starting_money
@@ -76,24 +82,61 @@ def run_trial(
         turn_count += 1
 
     if show_chart:
-        x = range(len(all_prices))
-        y = all_prices
-        plt.plot(x, y)
-        for t in dip_threshold_strategy.buy_turns:
-            plt.axvline(t)
+        colors = ["b", "g", "r", "c", "m", "y", "k"]
+
+        chart_strategies = [s for s in strategies if s.name in show_chart]
+        for s, c in zip(chart_strategies, colors):
+            x = range(len(all_prices))
+            y = all_prices
+            plt.plot(x, y)
+            for t in s.buy_turns:
+                plt.axvline(t, linewidth=0.5, color=c)
+        plt.xlabel("Turn")
+        plt.ylabel("Price")
         plt.show()
 
-    return strategies, price
+    return strategies
 
 
-def run_many_trials(trials, turns, **kwargs):
-    prices = []
+def run_many_trials(
+    trials,
+    turns,
+    show_seed=False,
+    starting_money=10000,
+    salary=100,
+    salary_interval=1,
+    starting_price=100,
+    growth_midpoint=0.002,
+    growth_stddev=0.01,
+    bdthreshold_threshold=0.95,
+    bdthreshold_window=30,
+    bdtrend_trend_length=3,
+    print_summary=False,
+    print_details=False,
+    show_chart=False,
+):
+    print(
+        dedent(
+            f"""
+            Starting {trials} trials, each running for {turns} turns, with the following parameters:
+            Starting Money: {starting_money:,}
+            Salary: {salary}
+            Salary Interval: {salary_interval}
+            Starting Price: {starting_price}
+            Growth Midpoint: {growth_midpoint}
+            Growth Stddev: {growth_stddev}
+            Buy Dip Threshold Threshold: {bdthreshold_threshold}
+            Buy Dip Threshold Window: {bdthreshold_window}
+            Buy Dip Trend Trend Length: {bdtrend_trend_length}
+        """
+        )
+    )
     strategy_map = defaultdict(list)
     for _ in range(trials):
-        strategies, price = run_trial(turns, **kwargs)
-        for s in strategies:
+        for s in run_trial(
+            turns,
+        ):
             strategy_map[s.name].append(s)
-        prices.append(price)
 
     ratios = [
         r.get_net_worth() / d.get_net_worth() if d.get_net_worth() > 0 else math.inf
@@ -120,6 +163,8 @@ def run_many_trials(trials, turns, **kwargs):
         s_50pct = l[math.floor(len(l) / 2)]
         s_95pct = l[math.floor(len(l) / 20) * 19]
 
+        output_lines.append(SEPARATING_LINE)
+
         output_lines.append(
             [
                 strategy_name,
@@ -127,6 +172,16 @@ def run_many_trials(trials, turns, **kwargs):
                 s_5pct.get_net_worth(),
                 s_50pct.get_net_worth(),
                 s_95pct.get_net_worth(),
+            ]
+        )
+
+        output_lines.append(
+            [
+                strategy_name,
+                "Last Price",
+                s_5pct.last_price,
+                s_50pct.last_price,
+                s_95pct.last_price,
             ]
         )
 
@@ -153,7 +208,7 @@ def run_many_trials(trials, turns, **kwargs):
         output_lines.append(
             [
                 strategy_name,
-                "%% of Days with Buy at Peak Price",
+                "% of Days with Buy at Peak Price",
                 s_5pct.peak_buy_count / s_5pct.buy_count if s_5pct.buy_count > 0 else 0,
                 (
                     s_50pct.peak_buy_count / s_50pct.buy_count
@@ -167,12 +222,12 @@ def run_many_trials(trials, turns, **kwargs):
                 ),
             ]
         )
+        if show_seed:
+            output_lines.append(
+                [strategy_name, "Seed", s_5pct.seed, s_50pct.seed, s_95pct.seed]
+            )
 
-    output_lines.append(
-        [strategy_name, "Seed", s_5pct.seed, s_50pct.seed, s_95pct.seed]
-    )
-
-    print(f"After {trials} trials of {turns} turns each:")
+    print(f"Results:")
     print(
         tabulate(
             output_lines,
@@ -184,6 +239,6 @@ def run_many_trials(trials, turns, **kwargs):
                 "95th Percentile",
             ],
             numalign="right",
-            intfmt=".20g",
+            floatfmt=",.3f",
         )
     )

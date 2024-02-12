@@ -24,7 +24,7 @@ class Strategy:
         if price > self.peak_price:
             self.peak_price = price
 
-    def _should_buy(self, price):
+    def _should_buy(self, _):
         return True
 
     def assess_and_buy(self, price, turn):
@@ -53,7 +53,7 @@ class Strategy:
 class NeverBuy(Strategy):
     name = "Never Buy"
 
-    def _should_buy(self, price):
+    def _should_buy(self, _):
         return False
 
 
@@ -64,16 +64,16 @@ class BuyRegularly(Strategy):
 class BuyDipThreshold(Strategy):
     name = "Buy Dip at Threshold"
 
-    def __init__(self, buy_threshold, buy_window, **kwargs) -> None:
+    def __init__(self, threshold, window, **kwargs) -> None:
         super().__init__(**kwargs)
         self.prices = deque()
-        self.buy_threshold = buy_threshold
-        self.buy_window = buy_window
+        self.threshold = threshold
+        self.window = window
 
     def _update_data(self, price):
         super()._update_data(price)
         self.prices.append(price)
-        if len(self.prices) > self.buy_window:
+        if len(self.prices) > self.window:
             self.prices.popleft()
         cond_print(
             self.print_details,
@@ -81,7 +81,7 @@ class BuyDipThreshold(Strategy):
         )
 
     def _should_buy(self, price):
-        return (sum(self.prices) / len(self.prices)) * self.buy_threshold >= price
+        return (sum(self.prices) / len(self.prices)) * self.threshold >= price
 
     def __repr__(self) -> str:
         return f"Shares: {self.shares}, Money: {self.money}, Prices: {self.prices}"
@@ -89,3 +89,18 @@ class BuyDipThreshold(Strategy):
 
 class BuyDipTrend(Strategy):
     name = "Buy Dip after Trend"
+
+    def __init__(self, trend_length, **kwargs):
+        super().__init__(**kwargs)
+        self.trend_length = trend_length
+        self.trend_count = 0
+
+    def _update_data(self, price):
+        if price < self.last_price:
+            self.trend_count += 1
+        else:
+            self.trend_count = 0
+        super()._update_data(price)
+
+    def _should_buy(self, _):
+        return self.trend_count >= self.trend_length
