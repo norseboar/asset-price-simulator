@@ -13,16 +13,20 @@ class Strategy:
         self.peak_price = 0
         self.last_price = 0
         self.buy_count = 0
-        self.peak_buy_count = 0
+        self.peak_count = 0
+        self.total_spent = 0
 
         self.seed = seed
         self.money = starting_money
         self.print_details = print_details
+        self.money_history = []
 
     def _update_data(self, price):
         self.last_price = price
         if price > self.peak_price:
             self.peak_price = price
+            self.peak_count += 1
+        self.money_history.append(self.money)
 
     def _should_buy(self, _):
         return True
@@ -37,14 +41,16 @@ class Strategy:
                     f"{self.name} buying at {price} with {self.money}",
                 )
                 self.buy_count += 1
-                if price >= self.peak_price:
-                    self.peak_buy_count += 1
                 self.buy_turns.append(turn)
             self.money -= price * share_count
+            self.total_spent += price * share_count
             self.shares += share_count
 
     def get_net_worth(self):
         return self.shares * self.last_price + self.money
+
+    def get_avg_price(self):
+        return self.total_spent / self.shares if self.shares > 0 else 0
 
     def __repr__(self) -> str:
         return f"{self.name}: {self.shares} shares, {self.money} money"
@@ -62,13 +68,14 @@ class BuyRegularly(Strategy):
 
 
 class BuyDipThreshold(Strategy):
-    name = "Buy Dip at Threshold"
+    name = "Buy Dip"
 
     def __init__(self, threshold, window, **kwargs) -> None:
         super().__init__(**kwargs)
         self.prices = deque()
         self.threshold = threshold
         self.window = window
+        self.buy_thresholds = []
 
     def _update_data(self, price):
         super()._update_data(price)
@@ -81,7 +88,9 @@ class BuyDipThreshold(Strategy):
         )
 
     def _should_buy(self, price):
-        return (sum(self.prices) / len(self.prices)) * self.threshold >= price
+        buy_threshold = sum(self.prices) / len(self.prices) * self.threshold
+        self.buy_thresholds.append(buy_threshold)
+        return buy_threshold >= price
 
     def __repr__(self) -> str:
         return f"Shares: {self.shares}, Money: {self.money}, Prices: {self.prices}"
