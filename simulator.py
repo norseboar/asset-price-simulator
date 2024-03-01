@@ -104,9 +104,9 @@ def run_many_trials(
     turns=365 * 3,
     show_headline=True,
     show_results_table=True,
-    starting_money=10000,
-    salary=100,
-    salary_interval=1,
+    starting_money=0,
+    salary=1000,
+    salary_interval=14,
     starting_price=100,
     growth_midpoint=0.0006,
     growth_stddev=0.0094,
@@ -119,14 +119,10 @@ def run_many_trials(
             dedent(
                 f"""
                 Starting {trials} trials, each running for {turns} turns, with the following parameters:
-                Starting Money: {starting_money:,}
-                Salary: {salary}
-                Salary Interval: {salary_interval}
-                Starting Price: {starting_price}
-                Growth Midpoint: {growth_midpoint}
-                Growth Stddev: {growth_stddev}
-                Buy Dip Threshold: {dip_threshold}
-                Buy Dip Window: {dip_window}
+                Asset Growth Midpoint: {growth_midpoint}
+                Asset Growth Stddev: {growth_stddev}
+                Dip Threshold: {dip_threshold}
+                Dip Window: {dip_window}
             """
             )
         )
@@ -295,6 +291,14 @@ def run_many_trials(
                 ],
                 divider=True,
             )
+        table.add_row(
+            [
+                "Never Buy",
+                "Net Worth",
+                *([f"{(turns/salary_interval)*salary:,.2f}"] * 5),
+            ],
+            divider=True,
+        )
 
         table.align = "r"
         table.vrules = prettytable.FRAME

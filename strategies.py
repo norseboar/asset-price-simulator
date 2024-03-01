@@ -64,11 +64,11 @@ class NeverBuy(Strategy):
 
 
 class BuyRegularly(Strategy):
-    name = "Buy Regularly"
+    name = "Reg Buyer"
 
 
 class BuyDipThreshold(Strategy):
-    name = "Buy Dip"
+    name = "Dip Buyer"
 
     def __init__(self, threshold, window, **kwargs) -> None:
         super().__init__(**kwargs)
