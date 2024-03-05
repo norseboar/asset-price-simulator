@@ -13,16 +13,25 @@ from strategies import BuyRegularly, BuyDipThreshold, NeverBuy
 from utilities import cond_print
 
 
-def update_price(rng, price, midpoint, stddev):
-    variance = rng.normal(midpoint, stddev)
+def update_price_basic(rng, price, mean, stddev):
+    variance = rng.normal(mean, stddev)
     return max(price + (price * variance), 1)
+
+
+def update_price(rng, price, mean, stddev):
+    # Uses this formula S = S^((μ−1/2​σ^2)+σ*w)
+    # See https://en.wikipedia.org/wiki/Geometric_Brownian_motion
+
+    # w is a random variable from the standard normal distribution
+    w = rng.normal(0, 1)
+    return price * math.exp(mean - (0.5 * stddev**2) + stddev * w)
 
 
 def run_trial(
     turns,
     seed=None,
     starting_price=100,
-    starting_money=10000,
+    starting_money=0,
     salary=100,
     salary_interval=1,
     growth_midpoint=0.002,
@@ -88,15 +97,185 @@ def run_trial(
         for t in buy_dip_strategy.buy_turns:
             plt.axvline(t, linewidth=0.5, color="b")
 
-        plt.xlabel("Turn")
+        plt.xlabel("Day")
         plt.ylabel("Price")
         plt.show()
 
-    return strategies
+    return strategies, price
 
 
 def run_trial_map_wrapper(kwargs):
     return run_trial(**kwargs)
+
+
+def run_many_thresholds(
+    num_trials,
+    turns,
+    dip_thresholds,
+    dip_window=30,
+    growth_midpoint=0.0006,
+    growth_stddev=0.0094,
+    starting_price=100,
+    starting_money=0,
+    salary=100,
+    salary_interval=1,
+    include_extras=False,
+    **kwargs,
+):
+    print(
+        dedent(
+            f"""
+            Starting {num_trials} trials, each running for {turns} turns, with the following parameters:
+            Asset Growth Midpoint: {growth_midpoint}
+            Asset Growth Stddev: {growth_stddev}
+            Dip Thresholds: {dip_thresholds}
+            Dip Window: {dip_window}
+        """
+        )
+    )
+
+    results_table = prettytable.PrettyTable()
+    if include_extras:
+        results_table.field_names = [
+            "Threshold",
+            "Net Worth (Mean, 95% CI)",
+            "Net Worth (P50)",
+            "Winning NW (Mean)",
+            "Winning NW (P50)",
+            "Losing NW (Mean)",
+            "Losing NW (P50)",
+            "Final Price (Mean)",
+            "Final Price (P50)",
+            "Price Paid (P50)",
+            "Days with Buy (P50)",
+            "Seed (P50)",
+        ]
+    else:
+        results_table.field_names = [
+            "Threshold",
+            "Net Worth (Mean, 95% CI)",
+            "Net Worth (P50)",
+            "Price Paid (P50)",
+            "Days with Buy (P50)",
+            "Seed (P50)",
+        ]
+    results_table.align = "r"
+    results_table.vrules = prettytable.FRAME
+
+    for dip_threshold in dip_thresholds:
+        strategy_map = defaultdict(list)
+
+        with Pool(cpu_count()) as pool:
+            trials = pool.map(
+                run_trial_map_wrapper,
+                [
+                    dict(
+                        turns=turns,
+                        starting_money=starting_money,
+                        salary=salary,
+                        salary_interval=salary_interval,
+                        starting_price=starting_price,
+                        growth_midpoint=growth_midpoint,
+                        growth_stddev=growth_stddev,
+                        dip_threshold=dip_threshold,
+                        dip_window=dip_window,
+                        **kwargs,
+                    )
+                ]
+                * num_trials,
+            )
+
+        for trial in trials:
+            for s in trial[0]:
+                strategy_map[s.name].append(s)
+        prices = [trial[1] for trial in trials]
+
+        strategy_pairs = sorted(
+            zip(strategy_map[BuyRegularly.name], strategy_map[BuyDipThreshold.name]),
+            key=lambda pair: pair[0].get_net_worth() / pair[1].get_net_worth()
+            if pair[1].get_net_worth() > 0
+            else math.inf,
+        )
+
+        pair_50pct = strategy_pairs[len(strategy_pairs) // 2]
+
+        ratios = [
+            r.get_net_worth() / d.get_net_worth() if d.get_net_worth() > 0 else math.inf
+            for r, d in strategy_pairs
+        ]
+
+        winning_ratios = [
+            (
+                r.get_net_worth() / d.get_net_worth()
+                if d.get_net_worth() > 0
+                else math.inf
+            )
+            for r, d in strategy_pairs
+            if r.last_price >= starting_price
+        ]
+
+        losing_ratios = [
+            (
+                r.get_net_worth() / d.get_net_worth()
+                if d.get_net_worth() > 0
+                else math.inf
+            )
+            for r, d in strategy_pairs
+            if r.last_price < starting_price
+        ]
+
+        mean_ratio = np.mean(ratios)
+        ratio_ci = st.norm.ppf(0.95) * st.sem(ratios)
+
+        avg_price_ratios = []
+        for r, d in strategy_pairs:
+            if d.get_avg_price() > 0:
+                avg_price_ratios.append(r.get_avg_price() / d.get_avg_price())
+            else:
+                avg_price_ratios.append(math.inf)
+
+        buy_count_ratios = []
+        for r, d in strategy_pairs:
+            if d.buy_count > 0:
+                buy_count_ratios.append(r.buy_count / d.buy_count)
+            else:
+                buy_count_ratios.append(math.inf)
+
+        if include_extras:
+            results_table.add_row(
+                [
+                    dip_threshold,
+                    f"{mean_ratio:.3f}x ± {ratio_ci:.3f}",
+                    f"{pair_50pct[0].get_net_worth() / pair_50pct[1].get_net_worth():.3f}x",
+                    f"{np.mean(winning_ratios):.3f}x",
+                    f"{np.median(winning_ratios):.3f}x",
+                    f"{np.mean(losing_ratios):.3f}x",
+                    f"{np.median(losing_ratios):.3f}x",
+                    f"${np.mean(prices):,.2f}",
+                    f"${np.median(prices):,.2f}",
+                    f"{np.median(avg_price_ratios):.2f}x",
+                    f"{np.median(buy_count_ratios):.2f}x",
+                    f"{pair_50pct[0].seed:d}",
+                ]
+            )
+        else:
+            results_table.add_row(
+                [
+                    dip_threshold,
+                    f"{mean_ratio:.3f}x ± {ratio_ci:.3f}",
+                    f"{pair_50pct[0].get_net_worth() / pair_50pct[1].get_net_worth():.3f}x",
+                    f"{np.median(avg_price_ratios):.2f}x",
+                    f"{np.median(buy_count_ratios):.2f}x",
+                    f"{pair_50pct[0].seed:d}",
+                ]
+            )
+
+    print(results_table)
+
+
+########################################################
+#     Functions that are not used in the blog post     #
+########################################################
 
 
 def run_many_trials(
@@ -105,8 +284,8 @@ def run_many_trials(
     show_headline=True,
     show_results_table=True,
     starting_money=0,
-    salary=1000,
-    salary_interval=14,
+    salary=100,
+    salary_interval=1,
     starting_price=100,
     growth_midpoint=0.0006,
     growth_stddev=0.0094,
@@ -150,8 +329,9 @@ def run_many_trials(
         )
 
     for trial in trials:
-        for s in trial:
+        for s in trial[0]:
             strategy_map[s.name].append(s)
+    prices = [trial[1] for trial in trials]
 
     strategy_pairs = sorted(
         zip(strategy_map[BuyRegularly.name], strategy_map[BuyDipThreshold.name]),
@@ -172,15 +352,24 @@ def run_many_trials(
     ]
 
     mean_ratio = np.mean(ratios)
-    confidence_interval = st.norm.ppf(0.95) * st.sem(ratios)
+    ratio_ci = st.norm.ppf(0.95) * st.sem(ratios)
+
+    mean_price = np.mean(prices)
+    price_ci = st.norm.ppf(0.95) * st.sem(prices)
 
     if show_headline:
         print("Results:")
         summary_table = prettytable.PrettyTable()
         summary_table.field_names = [
-            f"{BuyRegularly.name} vs {BuyDipThreshold.name}: Mean Net Worth Ratio (95% Confidence)"
+            f"{BuyRegularly.name} vs {BuyDipThreshold.name}: Mean Net Worth Ratio (95% Confidence)",
+            "Mean Asset Growth (95% Confidence)",
         ]
-        summary_table.add_row([f"{mean_ratio:.2f} ± {confidence_interval:.2f}"])
+        summary_table.add_row(
+            [
+                f"{mean_ratio:.3f} ± {ratio_ci:.3f}",
+                f"{mean_price/starting_price:.1f}x ± {price_ci/starting_price:.2f}",
+            ]
+        )
         summary_table.set_style(prettytable.DOUBLE_BORDER)
         print(summary_table)
 
@@ -304,7 +493,7 @@ def run_many_trials(
         table.vrules = prettytable.FRAME
         print(table)
 
-    return mean_ratio, confidence_interval
+    return mean_ratio, ratio_ci
 
 
 def optimal_walker(
